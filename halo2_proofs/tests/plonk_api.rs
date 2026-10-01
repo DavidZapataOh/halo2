@@ -12,6 +12,7 @@ use halo2_proofs::plonk::fingerprint::{capture_proof_fingerprint, ChallengeRecor
 use halo2_proofs::plonk::{
     create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Assigned, BatchVerifier, Circuit,
     Column, ConstraintSystem, Error, Fixed, SingleVerifier, TableColumn, VerificationStrategy,
+    VerifyingKey,
 };
 use halo2_proofs::poly::commitment::{Guard, MSM};
 use halo2_proofs::poly::{commitment::Params, Rotation};
@@ -1066,5 +1067,40 @@ fn plonk_api() {
     },
 }"#####
         );
+    }
+
+    // Check that the verification key round-trips through its serialization
+    {
+        let proof =
+            std::fs::read("./tests/plonk_api_proof.bin").expect("should succeed to read proof");
+        let verify = |vk: &VerifyingKey<EqAffine>| {
+            let strategy = SingleVerifier::new(&params);
+            let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+            verify_proof(
+                &params,
+                vk,
+                strategy,
+                &[&[&pubinputs[..]], &[&pubinputs[..]]],
+                &mut transcript,
+            )
+        };
+
+        let mut vk_bytes = vec![];
+        pk.get_vk().write(&mut vk_bytes).unwrap();
+        let vk = VerifyingKey::read::<_, MyCircuit<Fp>>(&mut &vk_bytes[..], &params).unwrap();
+        assert_eq!(
+            format!("{:#?}", vk.pinned()),
+            format!("{:#?}", pk.get_vk().pinned())
+        );
+        assert!(verify(&vk).is_ok());
+
+        // Replace the first fixed commitment with the second one.
+        let mut tampered = vk_bytes.clone();
+        tampered.copy_within(69..133, 5);
+        let vk = VerifyingKey::read::<_, MyCircuit<Fp>>(&mut &tampered[..], &params).unwrap();
+        assert!(verify(&vk).is_err());
+
+        vk_bytes[0] = 0x01;
+        assert!(VerifyingKey::read::<_, MyCircuit<Fp>>(&mut &vk_bytes[..], &params).is_err());
     }
 }

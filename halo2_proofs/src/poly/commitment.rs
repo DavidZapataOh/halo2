@@ -5,7 +5,7 @@
 
 use super::{Coeff, LagrangeCoeff, Polynomial};
 use crate::arithmetic::{best_fft, best_multiexp, parallelize, CurveAffine, CurveExt};
-use crate::helpers::CurveRead;
+use crate::helpers::{CurveRead, CurveWrite};
 
 use ff::{Field, PrimeField};
 use group::{prime::PrimeCurveAffine, Curve, Group};
@@ -203,6 +203,53 @@ impl<C: CurveAffine> Params<C> {
             u,
         })
     }
+
+    /// Writes params to a buffer, with every point as its affine coordinates.
+    ///
+    /// This is twice the size of [`Params::write`], and is read without
+    /// decompressing points.
+    pub fn write_uncompressed<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.k.to_le_bytes())?;
+        for g_element in &self.g {
+            g_element.write_uncompressed(writer)?;
+        }
+        for g_lagrange_element in &self.g_lagrange {
+            g_lagrange_element.write_uncompressed(writer)?;
+        }
+        self.w.write_uncompressed(writer)?;
+        self.u.write_uncompressed(writer)?;
+
+        Ok(())
+    }
+
+    /// Reads params written by [`Params::write_uncompressed`], checking that
+    /// every point is on the curve.
+    pub fn read_uncompressed<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let mut k = [0u8; 4];
+        reader.read_exact(&mut k[..])?;
+        let k = u32::from_le_bytes(k);
+
+        let n: u64 = 1 << k;
+
+        let g: Vec<_> = (0..n)
+            .map(|_| C::read_uncompressed(reader))
+            .collect::<Result<_, _>>()?;
+        let g_lagrange: Vec<_> = (0..n)
+            .map(|_| C::read_uncompressed(reader))
+            .collect::<Result<_, _>>()?;
+
+        let w = C::read_uncompressed(reader)?;
+        let u = C::read_uncompressed(reader)?;
+
+        Ok(Params {
+            k,
+            n,
+            g,
+            g_lagrange,
+            w,
+            u,
+        })
+    }
 }
 
 /// Wrapper type around a blinding factor.
@@ -253,6 +300,27 @@ impl<F: Field> MulAssign<F> for Blind<F> {
     fn mul_assign(&mut self, rhs: F) {
         self.0 *= rhs;
     }
+}
+
+#[test]
+fn test_params_uncompressed() {
+    use crate::pasta::EqAffine;
+
+    let params = Params::<EqAffine>::new(4);
+    let mut bytes = vec![];
+    params.write_uncompressed(&mut bytes).unwrap();
+    assert_eq!(bytes.len(), 4 + (2 * 16 + 2) * 64);
+
+    let read = Params::<EqAffine>::read_uncompressed(&mut &bytes[..]).unwrap();
+    assert_eq!(read.k, params.k);
+    assert_eq!(read.g, params.g);
+    assert_eq!(read.g_lagrange, params.g_lagrange);
+    assert_eq!(read.w, params.w);
+    assert_eq!(read.u, params.u);
+
+    // A point that is not on the curve is rejected.
+    bytes[4] ^= 1;
+    assert!(Params::<EqAffine>::read_uncompressed(&mut &bytes[..]).is_err());
 }
 
 #[test]

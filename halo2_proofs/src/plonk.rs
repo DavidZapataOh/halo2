@@ -9,9 +9,10 @@ use blake2b_simd::Params as Blake2bParams;
 use group::ff::{Field, FromUniformBytes, PrimeField};
 
 use crate::arithmetic::CurveAffine;
+use crate::helpers::{pack, unpack, CurveRead, CurveWrite};
 use crate::poly::{
-    Coeff, EvaluationDomain, ExtendedLagrangeCoeff, LagrangeCoeff, PinnedEvaluationDomain,
-    Polynomial,
+    commitment::Params, Coeff, EvaluationDomain, ExtendedLagrangeCoeff, LagrangeCoeff,
+    PinnedEvaluationDomain, Polynomial,
 };
 use crate::transcript::{ChallengeScalar, EncodedChallenge, Transcript};
 
@@ -51,17 +52,109 @@ pub struct VerifyingKey<C: CurveAffine> {
     cs_degree: usize,
     /// The representative of this `VerifyingKey` in transcripts.
     transcript_repr: C::Scalar,
+    selectors: Vec<Vec<bool>>,
 }
 
 impl<C: CurveAffine> VerifyingKey<C>
 where
     C::Scalar: FromUniformBytes<64>,
 {
+    /// Writes a verifying key to a buffer.
+    pub fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        // Version byte that will be checked on read.
+        writer.write_all(&[0x02])?;
+
+        writer.write_all(&(u32::try_from(self.fixed_commitments.len()).unwrap()).to_le_bytes())?;
+        for commitment in &self.fixed_commitments {
+            commitment.write_uncompressed(writer)?;
+        }
+        self.permutation.write(writer)?;
+
+        writer.write_all(&(u32::try_from(self.selectors.len()).unwrap()).to_le_bytes())?;
+        for selector in &self.selectors {
+            // Selectors are bit vectors, packed 8 bits to a byte.
+            for bits in selector.chunks(8) {
+                writer.write_all(&[pack(bits)])?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reads a verifying key from a buffer.
+    ///
+    /// The constraint system is rebuilt from `ConcreteCircuit::configure` and
+    /// its selectors are compressed again, so the result has the same
+    /// `transcript_repr` as the key that was written.
+    pub fn read<R: io::Read, ConcreteCircuit: Circuit<C::Scalar>>(
+        reader: &mut R,
+        params: &Params<C>,
+    ) -> io::Result<Self> {
+        let (domain, cs, _) = keygen::create_domain::<C, ConcreteCircuit>(params);
+
+        let mut version_byte = [0u8; 1];
+        reader.read_exact(&mut version_byte)?;
+        if 0x02 != version_byte[0] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected version byte",
+            ));
+        }
+
+        let mut num_fixed_columns_le_bytes = [0u8; 4];
+        reader.read_exact(&mut num_fixed_columns_le_bytes)?;
+        let num_fixed_columns = u32::from_le_bytes(num_fixed_columns_le_bytes);
+
+        let fixed_commitments: Vec<_> = (0..num_fixed_columns)
+            .map(|_| C::read_uncompressed(reader))
+            .collect::<io::Result<_>>()?;
+
+        let permutation = permutation::VerifyingKey::read(reader, &cs.permutation)?;
+
+        let mut num_selectors_le_bytes = [0u8; 4];
+        reader.read_exact(&mut num_selectors_le_bytes)?;
+        let num_selectors = u32::from_le_bytes(num_selectors_le_bytes);
+        if cs.num_selectors != num_selectors as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected number of selectors",
+            ));
+        }
+        let selectors: Vec<Vec<bool>> = vec![vec![false; params.n as usize]; cs.num_selectors]
+            .into_iter()
+            .map(|mut selector| {
+                let mut selector_bytes = vec![0u8; (selector.len() + 7) / 8];
+                reader.read_exact(&mut selector_bytes)?;
+                for (bits, byte) in selector.chunks_mut(8).zip(selector_bytes) {
+                    unpack(byte, bits);
+                }
+                Ok(selector)
+            })
+            .collect::<io::Result<_>>()?;
+
+        let (cs, _) = cs.compress_selectors(selectors.clone());
+        if cs.num_fixed_columns != fixed_commitments.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected number of fixed columns",
+            ));
+        }
+
+        Ok(Self::from_parts(
+            domain,
+            fixed_commitments,
+            permutation,
+            cs,
+            selectors,
+        ))
+    }
+
     fn from_parts(
         domain: EvaluationDomain<C::Scalar>,
         fixed_commitments: Vec<C>,
         permutation: permutation::VerifyingKey<C>,
         cs: ConstraintSystem<C::Scalar>,
+        selectors: Vec<Vec<bool>>,
     ) -> Self {
         // Compute cached values.
         let cs_degree = cs.degree();
@@ -74,6 +167,7 @@ where
             cs_degree,
             // Temporary, this is not pinned.
             transcript_repr: C::Scalar::ZERO,
+            selectors,
         };
 
         let mut hasher = Blake2bParams::new()

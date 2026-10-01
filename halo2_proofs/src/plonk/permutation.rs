@@ -1,8 +1,10 @@
 use super::circuit::{Any, Column};
 use crate::{
     arithmetic::CurveAffine,
+    helpers::{CurveRead, CurveWrite},
     poly::{Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial},
 };
+use std::io;
 
 pub(crate) mod keygen;
 pub(crate) mod prover;
@@ -80,6 +82,31 @@ impl<C: CurveAffine> VerifyingKey<C> {
     #[cfg(feature = "unstable-verifier-fingerprint")]
     pub(crate) fn commitments(&self) -> &[C] {
         &self.commitments
+    }
+
+    pub(crate) fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&(u32::try_from(self.commitments.len()).unwrap()).to_le_bytes())?;
+        for commitment in &self.commitments {
+            commitment.write_uncompressed(writer)?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn read<R: io::Read>(reader: &mut R, argument: &Argument) -> io::Result<Self> {
+        let mut num_commitments_le_bytes = [0u8; 4];
+        reader.read_exact(&mut num_commitments_le_bytes)?;
+        let num_commitments = u32::from_le_bytes(num_commitments_le_bytes);
+        if argument.columns.len() != num_commitments as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected number of column commitments",
+            ));
+        }
+        let commitments: Vec<_> = (0..argument.columns.len())
+            .map(|_| C::read_uncompressed(reader))
+            .collect::<io::Result<_>>()?;
+        Ok(VerifyingKey { commitments })
     }
 }
 
