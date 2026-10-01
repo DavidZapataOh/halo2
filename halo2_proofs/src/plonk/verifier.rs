@@ -6,7 +6,7 @@ use super::{
     vanishing, ChallengeBeta, ChallengeGamma, ChallengeTheta, ChallengeX, ChallengeY, Error,
     VerifyingKey,
 };
-use crate::arithmetic::CurveAffine;
+use crate::arithmetic::{best_multiexp, CurveAffine};
 use crate::poly::{
     commitment::{Blind, Guard, Params, MSM},
     multiopen::{self, VerifierQuery},
@@ -93,11 +93,14 @@ pub fn verify_proof<
                     if instance.len() > params.n as usize - (vk.cs.blinding_factors() + 1) {
                         return Err(Error::InstanceTooLarge);
                     }
-                    let mut poly = instance.to_vec();
-                    poly.resize(params.n as usize, C::Scalar::ZERO);
-                    let poly = vk.domain.lagrange_from_vec(poly);
+                    // The rows past `instance.len()` are zero, so only the
+                    // first `instance.len()` Lagrange bases contribute.
+                    let mut scalars = instance.to_vec();
+                    scalars.push(Blind::<C::Scalar>::default().0);
+                    let mut bases = params.g_lagrange[..instance.len()].to_vec();
+                    bases.push(params.w);
 
-                    Ok(params.commit_lagrange(&poly, Blind::default()).to_affine())
+                    Ok(best_multiexp(&scalars, &bases).to_affine())
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
