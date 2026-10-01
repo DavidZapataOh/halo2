@@ -8,7 +8,7 @@ use halo2_proofs::{
 };
 use pasta_curves::pallas;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -70,7 +70,7 @@ impl Config {
         config
     }
 
-    pub(crate) fn output_columns(&self) -> HashSet<Column<Advice>> {
+    pub(crate) fn output_columns(&self) -> BTreeSet<Column<Advice>> {
         [self.x_qr, self.y_qr].into_iter().collect()
     }
 

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use super::NonIdentityEccPoint;
 use halo2_proofs::{
@@ -47,7 +47,7 @@ impl Config {
         config
     }
 
-    pub(crate) fn advice_columns(&self) -> HashSet<Column<Advice>> {
+    pub(crate) fn advice_columns(&self) -> BTreeSet<Column<Advice>> {
         [self.x_p, self.y_p, self.x_qr, self.y_qr]
             .into_iter()
             .collect()
