@@ -104,19 +104,28 @@ where
         .map(|i| vec![false; i])
         .collect::<Vec<_>>();
 
-    for (i, rows) in selectors
+    // Pack the activations 64 rows to a word, so that two selectors are compared
+    // a word at a time.
+    let packed = selectors
         .iter()
-        .map(|selector| &selector.activations)
-        .enumerate()
-    {
+        .map(|selector| {
+            selector
+                .activations
+                .chunks(64)
+                .map(|rows| {
+                    rows.iter()
+                        .enumerate()
+                        .fold(0u64, |word, (k, &row)| word | (u64::from(row) << k))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    for (i, rows) in packed.iter().enumerate() {
         // Loop over the selectors previous to this one
-        for (j, other_selector) in selectors.iter().enumerate().take(i) {
+        for (j, other_rows) in packed.iter().enumerate().take(i) {
             // Look at what selectors are active at the same row
-            if rows
-                .iter()
-                .zip(other_selector.activations.iter())
-                .any(|(l, r)| l & r)
-            {
+            if rows.iter().zip(other_rows.iter()).any(|(l, r)| l & r != 0) {
                 // Mark them as incompatible
                 exclusion_matrix[i][j] = true;
             }
