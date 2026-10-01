@@ -3,8 +3,8 @@
 //!
 //! [halo]: https://eprint.iacr.org/2019/1021
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::hash::Hash;
+use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet};
+use std::hash::{BuildHasherDefault, Hash};
 
 use indexmap::IndexMap;
 
@@ -157,8 +157,11 @@ where
 {
     // Construct sets of unique commitments and corresponding information about
     // their queries.
-    let mut commitment_map: IndexMap<Q::Commitment, CommitmentData<Option<Q::Eval>, ()>> =
-        IndexMap::new();
+    //
+    // The maps are keyed by reference, so a fixed hash key is enough, and it keeps
+    // the work done here independent of the process's random hash seed.
+    let mut commitment_map: IndexMap<Q::Commitment, CommitmentData<Option<Q::Eval>, ()>, _> =
+        IndexMap::with_hasher(BuildHasherDefault::<DefaultHasher>::default());
 
     // Also construct mapping from a unique point to a point_index. This defines
     // an ordering on the points.
@@ -188,7 +191,8 @@ where
     // Construct map of unique ordered point_idx_sets to their set_idx
     let mut point_idx_sets = BTreeMap::new();
     // Also construct mapping from commitment to point_idx_set
-    let mut commitment_set_map = IndexMap::new();
+    let mut commitment_set_map =
+        IndexMap::with_hasher(BuildHasherDefault::<DefaultHasher>::default());
 
     for (commitment, commitment_data) in commitment_map.iter_mut() {
         let mut point_index_set = BTreeSet::new();
